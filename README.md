@@ -1,5 +1,11 @@
 # zigkov
-A implimentation of a Markov Chain random post generator in zig.
+A implementation of a Markov Chain random post generator in zig.
+
+## Usage
+
+```zigkov posts.txt```
+
+The text file is a flat database of text, with each post seperated by ```~```.
 
 ## License
 
