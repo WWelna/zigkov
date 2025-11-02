@@ -47,9 +47,10 @@ const WordStat = struct {
 var MarkovChain:std.ArrayList(Word) = undefined;
 
 pub inline fn clean(word:[] const u8, output:*std.ArrayList(u8)) !void {
-    for (word) |x| {
-        if(std.ascii.isAlphabetic(x) or x == '#' or x == '@' or x == '\'' or x == '€' or x == '-') { // Make this pretty somehow
-            if(x != '#' or x != '@' or x != '\'' or x != '€' or x != '-') try output.append(allocator, std.ascii.toLower(x)) else try output.append(allocator, x);
+    //const filter:[]u8 = "$@\\€-_";
+    for (word) |x| { // pretty
+        if(std.ascii.isAlphabetic(x)) {
+            try output.append(allocator, std.ascii.toLower(x));
         }
     }
 }
