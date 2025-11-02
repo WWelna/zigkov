@@ -27,6 +27,8 @@ const gpa_allocator = gpa.allocator();
 var arena = std.heap.ArenaAllocator.init(gpa_allocator);
 var allocator = arena.allocator();
 
+var stdout_buffer: [1024]u8 = undefined;
+
 const Word = struct {
     word:std.ArrayList(u8),
     next:std.ArrayList(WordStat),
@@ -47,15 +49,15 @@ var MarkovChain:std.ArrayList(Word) = undefined;
 pub inline fn clean(word:[] const u8, output:*std.ArrayList(u8)) !void {
     for (word) |x| {
         if(std.ascii.isAlphabetic(x) or x == '#' or x == '@' or x == '\'' or x == '€' or x == '-') { // Make this pretty somehow
-            if(x != '#' or x != '@' or x != '\'' or x != '€' or x != '-') try output.append(std.ascii.toLower(x)) else try output.append(x);
+            if(x != '#' or x != '@' or x != '\'' or x != '€' or x != '-') try output.append(allocator, std.ascii.toLower(x)) else try output.append(allocator, x);
         }
     }
 }
 
 pub inline fn add(chains:*std.ArrayList(Word), word:[] const u8, next:[] const u8, is_start:bool) !void {
     var updated:bool = false;
-    var w = std.ArrayList(u8).init(allocator);
-    var n = std.ArrayList(u8).init(allocator);
+    var w:std.ArrayList(u8) = .empty;
+    var n:std.ArrayList(u8) = .empty;
     try clean(word, &w); try clean(next, &n);
     if(w.items.len < 1 or n.items.len < 1) return;
     for (chains.items) |*x| {
@@ -70,7 +72,7 @@ pub inline fn add(chains:*std.ArrayList(Word), word:[] const u8, next:[] const u
             }
             if(updated == false) {
                 // Add new next entry
-                try x.next.append(.{.word = n, .count = 1, .normalized = 0});
+                try x.next.append(allocator, .{.word = n, .count = 1, .normalized = 0});
                 updated = true;
             }
             break;
@@ -78,15 +80,15 @@ pub inline fn add(chains:*std.ArrayList(Word), word:[] const u8, next:[] const u
     }
     if(updated == false) { // No point setting this as not used again
         // Add new entry word/next pair
-        var entry = std.ArrayList(WordStat).init(allocator);
-        try entry.append(.{.word = n, .count = 1, .normalized = 0});
-        try chains.append(.{.word = w, .next = entry, .end_count = 0, .end_normalized = 0, .start_count = if(is_start) 1 else 0, .start_normalized = 0});
+        var entry:std.ArrayList(WordStat) = .empty;
+        try entry.append(allocator, .{.word = n, .count = 1, .normalized = 0});
+        try chains.append(allocator, .{.word = w, .next = entry, .end_count = 0, .end_normalized = 0, .start_count = if(is_start) 1 else 0, .start_normalized = 0});
     }
 }
 
 pub inline fn add_end(chains:*std.ArrayList(Word), word:[] const u8) !void {
     var updated:bool = false;
-    var w = std.ArrayList(u8).init(allocator);
+    var w:std.ArrayList(u8) = .empty;
     try clean(word, &w);
     if(w.items.len < 1) return;
     for (chains.items) |*x| {
@@ -96,21 +98,22 @@ pub inline fn add_end(chains:*std.ArrayList(Word), word:[] const u8) !void {
         }
     }
     if(updated == false) { // No point setting this as not used again
-        try chains.append(.{.word = w, .next = std.ArrayList(WordStat).init(allocator), .end_count = 1, .end_normalized = 0, .start_count = 0, .start_normalized = 0});
+        try chains.append(allocator, .{.word = w, .next = .empty, .end_count = 1, .end_normalized = 0, .start_count = 0, .start_normalized = 0});
     }
 }
 
 pub inline fn do_stats(chains:*std.ArrayList(Word), data:[]const u8) !void {
+    var buffer:[4096]u8 = undefined;
     var file = try std.fs.cwd().openFile(data, .{ .mode = .read_only });
     defer file.close();
+    
+    var frb = file.reader(&buffer);
+    var reader = &frb.interface;
 
-    var buf_reader = std.io.bufferedReader(file.reader());
-    var in_stream = buf_reader.reader();
-
-    const buf = try allocator.alloc(u8, 4096);
     const buf2 = try allocator.alloc(u8, 4096);
+
     var post_count:f64 = 0;
-    while (try in_stream.readUntilDelimiterOrEof(buf, '.')) |line| {
+    while (reader.takeDelimiterInclusive('~')) |line| {
         post_count += 1;
         const tmp = buf2[0..std.mem.replacementSize(u8, line, "\n", "")];
         _ = std.mem.replace(u8, line, "\n", "", tmp);
@@ -122,6 +125,9 @@ pub inline fn do_stats(chains:*std.ArrayList(Word), data:[]const u8) !void {
             } else try add_end(chains, x);
             is_start=false;
         }
+    } else |err| switch (err) {
+        error.EndOfStream => {},
+        else => {return err;}
     }
 
     for (chains.items) |*x| {
@@ -159,14 +165,14 @@ pub inline fn find(chains:*std.ArrayList(Word), word:[] u8) ?*Word {
 }
 
 pub fn do_next(chains:*std.ArrayList(Word)) !?[]u8 {
-    var post = std.ArrayList(u8).init(allocator);
+    var post:std.ArrayList(u8) = .empty;
     var starter:*Word = undefined;
     while(true) {
         const i:usize = std.crypto.random.uintAtMost(usize, chains.items.len-1);
         if(chains.items[i].next.items.len > 5 and random(chains.items[i].start_normalized, 0)) {
             starter = &chains.items[i];
-            try post.appendSlice(starter.word.items);
-            try post.append(' ');
+            try post.appendSlice(allocator, starter.word.items);
+            try post.append(allocator, ' ');
             break;
         }
     }
@@ -179,8 +185,8 @@ pub fn do_next(chains:*std.ArrayList(Word)) !?[]u8 {
         while(!selected) {
             for (starter.next.items) |*x| {
                 if(random(x.normalized, 0.01)) {
-                    try post.appendSlice(x.word.items);
-                    try post.append(' ');
+                    try post.appendSlice(allocator, x.word.items);
+                    try post.append(allocator, ' ');
                     selected = true;
                     next = x.word.items;
                     break;
@@ -199,6 +205,8 @@ pub fn do_next(chains:*std.ArrayList(Word)) !?[]u8 {
 }
 
 pub fn main() !void {
+    var stdout_writer_wrapper = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout: *std.io.Writer = &stdout_writer_wrapper.interface;
     const params = comptime clap.parseParamsComptime(
         \\-h, --help            Display this help and exit.
         \\-p, --process <str>   Read text file & build markov chains.
@@ -211,7 +219,7 @@ pub fn main() !void {
         .diagnostic = &diag,
         .allocator = gpa_allocator,
     }) catch |err| {
-        diag.report(std.io.getStdErr().writer(), err) catch {};
+        //diag.report(std.debug, err) catch {};
         return err;
     };
     defer res.deinit();
@@ -219,10 +227,11 @@ pub fn main() !void {
     if (res.args.help != 0)
         std.debug.print("--help\n", .{});
     if(res.args.process) |f| { // Only Argument it recognizes atm
-        MarkovChain = std.ArrayList(Word).init(allocator);
+        MarkovChain = .empty;
         try do_stats(&MarkovChain, f);
-        try std.io.getStdOut().writer().print("{s}\n", .{if(try do_next(&MarkovChain)) |s| s else ""});
+        try stdout.print("{s}\n", .{if(try do_next(&MarkovChain)) |s| s else ""});
         defer arena.deinit();
     }
+    try stdout.flush();
     defer _ = gpa.deinit();
 }
